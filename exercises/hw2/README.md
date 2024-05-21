@@ -1,0 +1,1 @@
+这个 lab 是熟悉 shared memory, 写 stencil 和 matmul.
