@@ -575,3 +575,9 @@ __global__ void stride(T* a, int s)
 
 
 这里的走势关系， 以及不同型号为什么内存带宽呈现如此大的差异，我需要继续学习 GPU 体系结构的知识才能理解。
+
+下图很好地展示了 `grid-stride loop` 中发生的 `memory coalesecing`:
+
+<img src="https://notes.sjtu.edu.cn/uploads/upload_43e62e90061669bec8c2338cd25d06a6.png" width="400">
+
+当多个 `thread` 需要访问连续的一段物理内存地址， 如此处连续的 128 byte 时， GPU 的 `memory controller` 会将这些内存访问合并， 从而只访问一个 128 byte 的 cache line 拿到所有的数据。 因此极大地提升了访存速度。
