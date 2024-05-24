@@ -580,4 +580,4 @@ __global__ void stride(T* a, int s)
 
 <img src="https://notes.sjtu.edu.cn/uploads/upload_43e62e90061669bec8c2338cd25d06a6.png" width="400">
 
-当多个 `thread` 需要访问连续的一段物理内存地址， 如此处连续的 128 byte 时， GPU 的 `memory controller` 会将这些内存访问合并， 从而只访问一个 128 byte 的 cache line 拿到所有的数据。 因此极大地提升了访存速度。
+当同一个 `warp` 的多个 `thread` 需要访问连续的一段物理内存地址， 如此处连续的 128 byte 时， GPU 的 `memory controller` 会将这些内存访问合并， 从而只访问一个 128 byte 的 cache line 拿到所有的数据。 因此极大地提升了访存速度。

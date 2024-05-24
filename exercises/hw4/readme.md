@@ -1,91 +1,111 @@
-## **1. Matrix Row/Column Sums**
+这个 lab 是写 `matrix_row_sum` / `matrix_col_sum`, 并做 profiling.
 
-Your first task is to create a simple matrix row and column sum application in CUDA. The code skeleton is already given to you in *matrix_sums.cu*. Edit that file, paying attention to the FIXME locations, so that the output when run is like this:
+首先， 代码非常容易:
 
-```
-row sums correct!
-column sums correct!
-```
+```c
+// matrix row-sum kernel
+__global__ void row_sums(const float *A, float *sums, size_t ds)
+{
+  int idx = threadIdx.x + blockDim.x * blockIdx.x; // create typical 1D thread index from built-in variables
+  if (idx < ds)
+  {
+    float sum = 0.0f;
+    for (size_t i = 0; i < ds; i++)
+    {
+      sum += A[idx * ds + i];  
+    }       // write a for loop that will cause the thread to iterate across a row, keeeping a running sum, and write the result to sums
+    sums[idx] = sum;
+  }
+}
 
-After editing the code, compile it using the following:
-
-```
-module load cuda
-nvcc -o matrix_sums matrix_sums.cu
-```
-
-The module load command selects a CUDA compiler for your use. The module load command only needs to be done once per session/login. *nvcc* is the CUDA compiler invocation command. The syntax is generally similar to gcc/g++.
-
-To run your code, we will use an LSF command:
-
-```
-bsub -W 10 -nnodes 1 -P <allocation_ID> -Is jsrun -n1 -a1 -c1 -g1 ./matrix_sums
-```
-
-Alternatively, you may want to create an alias for your bsub command in order to make subsequent runs easier:
-
-```
-alias lsfrun='bsub -W 10 -nnodes 1 -P <allocation_ID> -Is jsrun -n1 -a1 -c1 -g1'
-lsfrun ./matrix_sums
-```
-
-To run your code at NERSC on Cori, we can use Slurm:
-
-```
-module load esslurm
-srun -C gpu -N 1 -n 1 -t 10 -A m3502 --reservation cuda_training --gres=gpu:1 -c 10 ./matrix_sums
+// matrix column-sum kernel
+__global__ void column_sums(const float *A, float *sums, size_t ds)
+{
+  int idx = threadIdx.x + blockDim.x * blockIdx.x; // create typical 1D thread index from built-in variables
+  if (idx < ds)
+  {
+    float sum = 0.0f;
+    for (size_t i = 0; i < ds; i++)
+    {
+      sum += A[i * ds + idx];
+    }         // write a for loop that will cause the thread to iterate down a column, keeeping a running sum, and write the result to sums
+    sums[idx] = sum;
+  }
+}
 ```
 
-Allocation `m3502` is a custom allocation set up on Cori for this training series, and should be available to participants who registered in advance. If you cannot submit using this allocation, but already have access to another allocation that grants access to the Cori GPU nodes (such as m1759), you may use that instead.
+接下来是 profiling 部分。 首先我这里的猜测是 `row_sum` 更快， 毕竟缓存命中率高嘛。先用 `nv-nsight-cu-cli`:
 
-If you prefer, you can instead reserve a GPU in an interactive session, and then run an executable any number of times while the Slurm allocation is active (this is recommended if there are enough available nodes):
-
-```
-salloc -C gpu -N 1 -t 60 -A m3502 --reservation cuda_training --gres=gpu:1 -c 10
-srun -n 1 ./matrix_sums
-```
-
-Note that you only need to `module load esslurm` once per login session; this is what enables you to submit to the Cori GPU nodes.
-
-
-If you have trouble, you can look at *matrix_sums_solution.cu* for a complete example.
-
-## **2. Profiling**
-
-We'll introduce something new: the profiler (in this case, Nsight Compute). We'll use the profiler first to time the kernel execution times, and then to gather some "metric" information that will possibly shed light on our observations.
-
-It's necessary to complete task 1 first. Next, load the Nsight Compute module:
-```
-module load nsight-compute
-```
-
-Then, launch Nsight as follows:
-(you may want to make your terminal session wide enough to make the output easy to read)
+来看看结果:
 
 ```
-lsfrun nv-nsight-cu-cli ./matrix_sums
+ row_sums(const float *, float *, unsigned long) (64, 1, 1)x(256, 1, 1), Context 1, Stream 7, Device 0, CC 8.0
+    Section: GPU Speed Of Light Throughput
+    ----------------------- ------------- ------------
+    Metric Name               Metric Unit Metric Value
+    ----------------------- ------------- ------------
+    DRAM Frequency          cycle/nsecond         1.21
+    SM Frequency            cycle/nsecond         1.09
+    Elapsed Cycles                  cycle    4,205,684
+    Memory Throughput                   %        59.11
+    DRAM Throughput                     %        17.98
+    Duration                      msecond         3.84
+    L1/TEX Cache Throughput             %        99.84
+    L2 Cache Throughput                 %        17.06
+    SM Active Cycles                cycle 2,489,585.13
+    Compute (SM) Throughput             %         2.08
+    ----------------------- ------------- ------------
+
+  column_sums(const float *, float *, unsigned long) (64, 1, 1)x(256, 1, 1), Context 1, Stream 7, Device 0, CC 8.0
+    Section: GPU Speed Of Light Throughput
+    ----------------------- ------------- ------------
+    Metric Name               Metric Unit Metric Value
+    ----------------------- ------------- ------------
+    DRAM Frequency          cycle/nsecond         1.21
+    SM Frequency            cycle/nsecond         1.09
+    Elapsed Cycles                  cycle    2,957,480
+    Memory Throughput                   %        25.56
+    DRAM Throughput                     %        25.56
+    Duration                      msecond         2.71
+    L1/TEX Cache Throughput             %         9.17
+    L2 Cache Throughput                 %        21.48
+    SM Active Cycles                cycle 1,694,262.75
+    Compute (SM) Throughput             %         3.94
+    ----------------------- ------------- ------------
 ```
 
-What does the output tell you?
-Can you locate the lines that identify the kernel durations?
-Are the kernel durations the same or different?
-Would you expect them to be the same or different?
+Oh 看来我猜错了！实际上是 `col_sum` 更快的， 快了接近 1.5 倍。 为什么会这样？ 实际上这个结合本次课所讲的 `memory coalescing` 就好理解了。 为什么我直接猜测是 `row_sum` 更快？ 实际上那是单线程的经验。 在单线程的情况下， 按行遍历缓存命中率更高。 但是 cuda 是多线程模型， 这里如果采取 `row_sum`， 则同一时刻同一 `warp` 的不同 `thread` 访问的内存地址的 __连续__ 的。 这样 memory controller 将内存访问打包为 `transaction` 后， 访存次数就少了很多。 但如果采取 `row_sum` 这里同一时刻同一 `warp` 的不同 `thread` 访问的内存地址是分散的， 需要非常多个 `transaction` 才能访问完这些内存， 效率会降低。
 
+为什么这里没分析到缓存命中率？ 因为虽然 `row_sum` 每个线程第一次访问内存之后都将这一行的多个元素以 `cacheline` 的形式移入了 `cache`， 但是之后访问仍要多次访问 `cache`， 每一次都不能合并访问， 还是浪费了很多次访存次数。 而 `col_sum` 每一次访存都是合并访问， 极大地减少了访存次数。 具体计算而言， 假设 `cacheline` 大小为 `L`, 矩阵为 `N x N`, 则有 `N` 个线程。 那么 `col_sum` 经过 `memory coalescing` 之后只有 `N` 次访存， 而 `row_sum` 有 `N * (N / L)` 次访存和 `N * (N - N / L)` 次访问 `cache`.
 
-Next, launch *Nsight* as follows:
+还可以用这个命令来具体分析访存:
 
 ```
-lsfrun nv-nsight-cu-cli --metrics l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum,l1tex__t_requests_pipe_lsu_mem_global_op_ld.sum ./matrix_sums
+nv-nsight-cu-cli --metrics l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum,l1tex__t_requests_pipe_lsu_mem_global_op_ld.sum ./matrix_sums
 ```
 
-Our goal is to measure the global memory load efficiency of our kernels. In this case we have asked for two metrics: "*l1tex__t_requests_pipe_lsu_mem_global_op_ld.sum*" (the number of global memory load requests) and "*l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum*" (the number of sectors requested for global loads). This first metric above represents the denominator (requests) of the desired measurement (transactions per request) and the second metric represents the numerator (transactions). Dividing these numbers will give us the number of transactions per request. 
+结果如下:
 
-What similarities or differences do you notice between the *row_sum* and *column_sum* kernels?
-Do the kernels (*row_sum*, *column_sum*) have the same or different efficiencies?
-Why?
-How does this correspond to the observed kernel execution times for the first profiling run?
+```
+  row_sums(const float *, float *, unsigned long) (64, 1, 1)x(256, 1, 1), Context 1, Stream 7, Device 0, CC 8.0
+    Section: Command line profiler metrics
+    ----------------------------------------------- ----------- ------------
+    Metric Name                                     Metric Unit Metric Value
+    ----------------------------------------------- ----------- ------------
+    l1tex__t_requests_pipe_lsu_mem_global_op_ld.sum     request    8,388,608
+    l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum       sector  268,435,456
+    ----------------------------------------------- ----------- ------------
 
-Can we improve this?  (Stay tuned for the next CUDA training session.)
+  column_sums(const float *, float *, unsigned long) (64, 1, 1)x(256, 1, 1), Context 1, Stream 7, Device 0, CC 8.0
+    Section: Command line profiler metrics
+    ----------------------------------------------- ----------- ------------
+    Metric Name                                     Metric Unit Metric Value
+    ----------------------------------------------- ----------- ------------
+    l1tex__t_requests_pipe_lsu_mem_global_op_ld.sum     request    8,388,608
+    l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum       sector   33,554,432
+    ----------------------------------------------- ----------- ------------
+```
 
-Here is a useful blog to help you get familiar with Nsight Compute: https://devblogs.nvidia.com/using-nsight-compute-to-inspect-your-kernels/
+此处， `request` 表示请求的内存访问数量， `sector` 表示经过 memory controller 之后的 `transaction`数量。这里由于都是遍历一个二维数组， 因此自然 `request` 是一样的。 而 `col_sum` 有 `memory coalescning`， 因此最终的 `transaction` 数量远小于 `row_sum`， 性能也快了非常多。(16000 * 16000 的矩阵下快了 1.5倍)
+
 
