@@ -530,4 +530,48 @@ hemi::cudaLaunch(saxpy, 1<<20, 2.0, x, y);
 ```
 
 
+## Memory Coalesecing 
 
+上方提到的 [blog/how-access-global-memory-efficiently-cuda-c-kernels/ ](https://developer.nvidia.com/blog/how-access-global-memory-efficiently-cuda-c-kernels/) 详细介绍了 memory coalescing. 如果不能理解它， 那就无法理解这里为什么使用 `grid-stride loop` 具有优越性。
+
+对于 `global memory`， 我们在 cuda 中可以使用 `__device__` 关键字声明一个存放在 global memory 里的变量， 这样 CPU 和 GPU 都可以访问它， 如
+
+```c
+__device__ int globalArray[256];
+```
+
+此外， `cudaMalloc()` 可以动态分配 global memory 里的内存空间。
+
+`Global Memory Coalescing` 指的是将同一个 `warp` 的不同 `thread` 的 `load / store` 指令合并成一个 `transaction`， 从而降低对 DRAM 内存带宽的占用。
+
+可以看下面这个实验:
+
+```cpp
+template<typename T>
+__global__ void offset(T* a, int s)
+{
+  int i = blockDim.x * blockIdx.x + threadIdx.x + s;
+  a[i] = a[i] + 1;
+}
+
+template<typename T>
+__global__ void stride(T* a, int s)
+{
+  int i = (blockDim.x * blockIdx.x + threadIdx.x) * s;
+  a[i] = a[i] + 1;
+}
+```
+
+对于第一个 kernel, 有效内存带宽和 `offset` 大小的关系如图：
+
+
+<img src="https://notes.sjtu.edu.cn/uploads/upload_538f8ec802923b654edc5e2b1e4cbd04.png" width="400">
+
+
+对于第二个 kernel, 有效内存带宽和 `stride` 大小的关系如图：
+
+
+<img src="https://notes.sjtu.edu.cn/uploads/upload_dc47f2be181ef34cfc6431fede802140.png" width="400">
+
+
+这里的走势关系， 以及不同型号为什么内存带宽呈现如此大的差异，我需要继续学习 GPU 体系结构的知识才能理解。
