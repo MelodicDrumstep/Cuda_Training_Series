@@ -343,7 +343,7 @@ REDUCE_WS:
 
 ```
 kernel              duration           memory throughput
-atomic_read          23.97ms                1.64%
+atomic_read          23.97ms                 1.64%
 reduce_a             44.67us                51.71%
 reduce_ws            43.97us                51.32%
 ```
@@ -390,3 +390,156 @@ Memory Bandwidth (GB/s): 1555.2
 
 所以大概是 `memory bandwidth` 的一半，`nsight` 显示的 `memory throughput` 也大概是这个数， 性能已经很不错了。
 
+接下来测试一下其他数据大小， 汇总表格如下：
+
+```
+N = 8 * 1024 * 1024
+kernel              duration           memory throughput
+atomic_read          23.97ms                 1.64%
+reduce_a             44.67us                51.71%
+reduce_ws            43.97us                51.32%
+
+N = 640 * 256
+kernel              duration           memory throughput
+atomic_read         471.10us                 1.41%
+reduce_a              6.43us                21.88%
+reduce_ws             5.86us                 7.47%
+
+N = 640 * 128
+kernel              duration           memory throughput
+atomic_read         237.12us                 1.26%
+reduce_a              5.57us                24.10%
+reduce_ws             5.38us                 7.30%
+
+N = 640 * 32
+kernel              duration           memory throughput
+atomic_read          61.44us                 1.26%
+reduce_a              5.54us                23.96%
+reduce_ws             5.25us                 7.19%
+
+N = 640 
+kernel              duration           memory throughput
+atomic_read           5.06us                 0.88%
+reduce_a              5.50us                23.49%
+reduce_ws             5.22us                 7.10%
+```
+
+我们可以发现， 对于 `N = 640 * 128 ~ 640 * 256` 这种中型规模的数据， `reduce_ws` 更快一些， 但 `memory throughput` 反而小很多。 这是因为 `reduce_ws` 使用 `warp shuffle`,　对 `shared memory` 的访问自然少了很多。 因此， `memory throughput` 和性能也不是一一对应的关系，要具体情况具体分析。
+
+我们可以发现， 数组规模 `N` 越小， `atomic_read` 越快， 当 `N` 很小的时候， `atomic_read` 的性能和其他两种方案不相上下。 这很好理解， 毕竟 `atomic_read` 就是执行了 `N` 次原子操作， 理应是一个较为线性的时间增长。
+
+而对于两种 `reduce` 方案， 它们在 `N = 640 ~ 640 * 256` 范围内几乎执行时间不变， 且二者不相上下， `reduce_ws` 略优。这是因为 `N` 在此处只会影响到 `reduce` 方案的第一个 `grid-stride loop`, 而这个 `grid-stride loop` 并不是性能瓶颈(一般来说 `grid-stride loop` 可以利用 `memory coalescing`, 所以是较快的内存访问)， 性能瓶颈是之后的两次 `reduction`。 因此， 它们的性能并没有随 `N` 的变化而产生较大变化。 而 `N = 8M` 时可以发现两种方案的执行时间有了显著增加， 此时 `grid-stride loop` 逐渐成为性能瓶颈。 
+
+Tips: 如果把 `N` 改成 `32M (32 * 1024 * 1024)`, 那么会直接报错:
+
+```
+atomic sum reduction incorrect!
+output is 16777216.000000, expected 0.000000
+```
+
+这是由于 `float` 最大值不够用， 数值溢出了。
+
+## row_sum with reduction
+
+接下来的任务是用 `reduction` 的思想改进 `row_sum`. 由于 `memory coalescing` 的存在， `row_sum` 比 `col_sum` 慢了很多。 这里我们需要利用好 `shared memory / warp shuffle` 来改进性能。
+
+首先看一下原始版本的性能:
+
+```
+block_size = 256
+kernel              Duration                Memory Throughput
+row_sum_original     3.84ms                     59.11%
+col_sum              2.69ms                     26.69%
+```
+
+我的实现是这样的:
+
+```cpp
+// matrix row-sum kernel with reduction
+__global__ void row_sums(const float *A, float *sums, size_t ds)
+{
+  __shared__ float sdata[block_size];
+  //a shared memory to hold the partial sums
+  int row = blockIdx.x;
+  int idx = threadIdx.x;
+  sdata[idx] = 0;
+  for(int i = idx; i < ds; i += block_size)
+  {
+    sdata[idx] += A[row * ds + i]; 
+  }
+  //a block-stride loop to fill the shared memory
+
+  for(int offset = block_size / 2; offset > 0; offset >>= 1)
+  {
+    __syncthreads();
+    if(idx < offset)
+    {
+      sdata[idx] += sdata[idx + offset];
+    }
+  }
+  //reduction loop
+
+  if(idx == 0)
+  {
+    sums[row] = sdata[0];
+  }
+}
+```
+
+性能效果:
+
+```
+block_size = 256
+kernel              Duration                Memory Throughput
+row_sum_original     3.84ms                     59.11%
+col_sum              2.69ms                     26.69%
+row_sum_shared     999.01us                     69.43%       
+```
+
+可以发现，这种实现比原始 `row_sum` 快了很多， 而且比 `col_sum` 也快了很多(2.69 倍)！
+
+为什么会这么快？ 因为 `col_sum` 可以看成由上自下计算， 而 `reduction` 方案是所有行同时进行计算。 `reduction` 方案所需的线程数为 `DSIZE * block_size`, 而 `col_sum` 需要的线程数为 `DSIZE`. 这也体现了增加有效线程数来提升性能的思想。
+
+之后， 我又试了一下使用 `warp shuffle` 来编写这个函数:
+
+```cpp
+// matrix row-sum kernel with reduction
+__global__ void row_sums(const float *A, float *sums, size_t ds)
+{
+  int row = blockIdx.x;
+  int idx = threadIdx.x;
+  float val = 0;
+  for(int i = idx; i < ds; i += block_size)
+  {
+    val += A[row * ds + i]; 
+  }
+  //a block-stride loop to fill the shared memory
+
+  unsigned int MASK = 0xffffffffU;
+
+  for(int offset = block_size / 2; offset > 0; offset >>= 1)
+  {
+    val += __shfl_down_sync(MASK, val, offset);
+    //Use warp shuffle intrinsics to perform the reduction
+  }
+  //reduction loop
+
+  if(idx == 0)
+  {
+    sums[row] = val;
+  }
+}
+```
+
+到目前位置的性能效果:
+
+```
+block_size = 256
+kernel              Duration                Memory Throughput
+row_sum_original     3.84ms                     59.11%
+col_sum              2.69ms                     26.69%
+row_sum_shared     999.01us                     69.43%
+row_sum_shuffle    994.88us                     69.53%
+```
+
+可以看到， 使用 `shared memory` 和使用 `warp shuffle` 的 reduction 方案性能相差无几， 但都比原始方案要快了很多。
