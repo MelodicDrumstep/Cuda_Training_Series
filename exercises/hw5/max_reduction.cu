@@ -17,22 +17,25 @@
 const size_t N = 8ULL*1024ULL*1024ULL;  // data size
 const int BLOCK_SIZE = 256;  // CUDA maximum is 1024
 
-__global__ void reduce(float *gdata, float *out, size_t n){
+__global__ void reduce(float *gdata, float *out, size_t n)
+{
      __shared__ float sdata[BLOCK_SIZE];
      int tid = threadIdx.x;
      sdata[tid] = 0.0f;
      size_t idx = threadIdx.x+blockDim.x*blockIdx.x;
 
-     while (idx < n) {  // grid stride loop to load data
+     while (idx < n) 
+     {  // grid stride loop to load data
         sdata[tid] += gdata[idx];
         idx += gridDim.x*blockDim.x;  
         }
 
-     for (unsigned int s=blockDim.x/2; s>0; s>>=1) {
+     for (unsigned int s=blockDim.x/2; s>0; s>>=1) 
+     {
         __syncthreads();
         if (tid < s)  // parallel sweep reduction
             sdata[tid] += sdata[tid + s];
-        }
+     }
      if (tid == 0) out[blockIdx.x] = sdata[0];
   }
 
@@ -58,7 +61,7 @@ int main(){
   reduce<<<1, BLOCK_SIZE>>>(d_sums, d_A, blocks); // reduce stage 2
   cudaCheckErrors("reduction kernel launch failure");
   //cuda processing sequence step 2 is complete
-  // copy vector sums from device to host:
+  // copy vector sums from dev ice to host:
   cudaMemcpy(h_sum, d_A, sizeof(float), cudaMemcpyDeviceToHost);
   //cuda processing sequence step 3 is complete
   cudaCheckErrors("reduction w/atomic kernel execution failure or cudaMemcpy D2H failure");
