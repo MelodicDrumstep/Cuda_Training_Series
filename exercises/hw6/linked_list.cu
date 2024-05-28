@@ -19,9 +19,10 @@ struct list_elem {
 };
 
 template <typename T>
-void alloc_bytes(T &ptr, size_t num_bytes){
-
-  ptr = (T)malloc(num_bytes);
+void alloc_bytes(T &ptr, size_t num_bytes)
+{
+  //ptr = (T)malloc(num_bytes);
+  cudaMallocManaged(&ptr, num_bytes);
 }
 
 __host__ __device__
@@ -43,12 +44,14 @@ int main(){
   list_elem *list_base, *list;
   alloc_bytes(list_base, sizeof(list_elem));
   list = list_base;
-  for (int i = 0; i < num_elem; i++){
+  for (int i = 0; i < num_elem; i++)
+  {
     list->key = i;
     alloc_bytes(list->next, sizeof(list_elem));
-    list = list->next;}
-  print_element(list_base, ele);
-  gpu_print_element<<<1,1>>>(list_base, ele);
+    list = list->next;
+  }
+  print_element(list_base, ele); // run on cpu
+  gpu_print_element<<<1,1>>>(list_base, ele); // run on gpu
   cudaDeviceSynchronize();
   cudaCheckErrors("cuda error!");
 }
