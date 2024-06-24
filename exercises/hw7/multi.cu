@@ -79,7 +79,9 @@ int main() {
 
   unsigned long long et1 = dtime_usec(0);
 
-  for (int i = 0; i < num_gpus; i++) {
+  for (int i = 0; i < num_gpus; i++) 
+  {
+    cudaSetDevice(i); //select the device
     gaussian_pdf<<<(ds+255)/256, 256>>>(d_x[i], d_y[i], 0.0, 1.0, ds);
   }
   cudaDeviceSynchronize();

@@ -72,3 +72,17 @@ streams elapsed time: 0.014049
 ```
 
 可以看到大致快了接近一倍， 符合预期。
+
+## multi GPU
+
+这个任务是改写调用 `kernel` 的循环， 让每个 `kernel` 运行在不同 GPU 上。 
+
+只需要在 `kernel` 调用前使用 `cudaSetDevice` 选中对应 GPU 即可。
+
+```c
+for (int i = 0; i < num_gpus; i++) 
+{
+    cudaSetDevice(i); //select the device
+    gaussian_pdf<<<(ds+255)/256, 256>>>(d_x[i], d_y[i], 0.0, 1.0, ds);
+}
+```
